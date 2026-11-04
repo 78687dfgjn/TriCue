@@ -9,6 +9,7 @@ from ultralytics.utils.tal import make_anchors
 from .config import ARCHITECTURE
 from .sdgw import SDGW
 from .efc import EFC
+from .operators import SCR, RCMF, FSPR, VERSION
 
 def fp32_context(x):return torch.autocast(device_type=x.device.type,enabled=False)
 
@@ -116,17 +117,63 @@ class FP32AssignmentLoss(v8DetectionLoss):
         try:return super().__call__(preds,batch)
         finally:self.assignment_cache=None
 
+MASKS = {'ADD': (False, False, False), 'SCR': (True, False, False),
+         'RCMF': (False, True, False), 'FSPR': (False, False, True),
+         'SCR_RCMF': (True, True, False), 'SCR_FSPR': (True, False, True),
+         'RCMF_FSPR': (False, True, True), 'C': (True, True, True)}
+
 class ReproModel(DetectionModel):
-    def init_criterion(self):return FP32AssignmentLoss(self)
+    def init_criterion(self): return FP32AssignmentLoss(self)
     def _apply(self,fn):
         if hasattr(self,'criterion'):del self.criterion
         return super()._apply(fn)
+    def _predict_once(self,x,profile=False,visualize=False,embed=None):
+        if profile or visualize or embed is not None:raise NotImplementedError('Use the isolated diagnostic entry for this graph')
+        if x.shape[1]!=6:raise ValueError('Expected paired six-channel input')
+        rgb,ir=x.chunk(2,1);visible=True;current=rgb;y=[];statistics={};conditions={}
+        for m in self.model:
+            sentinel=m.f==-3
+            if sentinel:
+                if any(True for _ in m.parameters()):rgb,ir=m(torch.cat([rgb,ir],1)).chunk(2,1)
+                current=rgb if visible else ir
+            else:
+                if m.f==-4:
+                    visible=not visible;current=rgb if visible else ir
+                elif m.f!=-1:current=y[m.f] if isinstance(m.f,int) else [current if j==-1 else y[j] for j in m.f]
+                if m.i in (9,11,14,16,20,22) and self.tricue_mask[0]:
+                    base=m.orig(current);enhanced,moments=m.module(base);statistics[m.i]=moments;current=base+m.gamma*enhanced
+                elif m.i in (23,24,25) and self.tricue_mask[1]:
+                    r,t=current[2:];ri,ti=m.f[-2:]
+                    if not self.tricue_mask[0]:
+                        import torch.nn.functional as F
+                        for key,z in [(ri,r),(ti,t)]:
+                            with torch.autocast(device_type=z.device.type,enabled=False):
+                                z=z.float();kernel=z.new_full((z.shape[1],1,3,3),1/9);mu=F.conv2d(F.pad(z,(1,1,1,1),mode='reflect'),kernel,groups=z.shape[1])
+                                second=F.conv2d(F.pad(z.square(),(1,1,1,1),mode='reflect'),kernel,groups=z.shape[1])
+                                statistics[key]=(mu,(second-mu.square()).clamp_min(1e-5).sqrt())
+                    with torch.autocast(device_type=r.device.type,enabled=False):
+                        branch,condition=m.module(r.float(),t.float(),statistics[ri],statistics[ti])
+                    conditions[m.i]=condition;current=r+t+m.gamma*branch.to(r.dtype)
+                elif m.i in (32,35,38) and self.tricue_mask[2]:
+                    base=m.orig(current);condition=conditions.get({32:23,35:24,38:25}[m.i]) if self.tricue_mask[1] else None
+                    current=base+m.gamma*m.module(base,condition)
+                else:current=m(current)
+            if m.i<23 and not sentinel:
+                if visible:rgb=current
+                else:ir=current
+            y.append(current if m.i in self.save else None)
+        return current
 
-SPEC={'G1':'sdgw','G2':'efc','G3':'hfp'}
 
-def inject(model):
+def inject(model,variant='C'):
+    if variant not in MASKS:raise ValueError('Unknown TriCue variant: '+variant)
+    spec=dict(version=VERSION,variant=variant,mask=list(MASKS[variant]),
+              modules=['SCR','RCMF','FSPR'],missing_condition='zeros4',initialization='fixed historical C')
+    if model.yaml.get('tricue'):
+        if model.yaml['tricue']!=spec:raise ValueError('TriCue architecture/version mismatch')
+        return model
     if model.yaml.get('release_combination'):
-        assert model.yaml['release_combination']==SPEC;return model
+        raise ValueError('Legacy HFSS checkpoints require their original release; no implicit conversion')
     assert len(model.model)==40 and tuple(model.model[-1].f)==(32,35,38,31)
     for index in (23,24,25):model.model[index]=route(AddFusion(),model.model[index])
     positions={
@@ -134,23 +181,38 @@ def inject(model):
         'efc':[(23,64),(24,128),(25,256)],
         'hfp':[(32,64),(35,128),(38,256)],
     }
+    # Construct with the same independent streams as C; prune disabled branches afterward.
     for name,slots in positions.items():
         for index,channels in slots:
             with torch.random.fork_rng(devices=[]):
                 torch.manual_seed(100000+index*100+sum((k+1)*ord(v) for k,v in enumerate(name)))
                 old=model.model[index]
-                model.model[index]=Fusion(old,channels) if name=='efc' else Residual(old,name,channels)
+                wrapper=Fusion(old,channels) if name=='efc' else Residual(old,name,channels)
+            if name=='sdgw':wrapper.module=SCR(wrapper.module)
+            elif name=='efc':
+                with torch.random.fork_rng(devices=[]):
+                    torch.manual_seed(730000+index);wrapper.module=RCMF(wrapper.module.module)
+            else:
+                with torch.random.fork_rng(devices=[]):
+                    torch.manual_seed(740000+index);wrapper.module=FSPR(wrapper.module)
+            model.model[index]=wrapper
+    for enabled,slots in zip(MASKS[variant],positions.values()):
+        if not enabled:
+            for index,_ in slots:
+                old=model.model[index]
+                model.model[index]=route(AddFusion(),old) if index in (23,24,25) else old.orig
+    for layer in model.model:layer.np=sum(p.numel() for p in layer.parameters())
     model.model[-1].segmentation_head=ZeroSegmentationHead(model.model[-1].num_seg_classes)
     model.cmbm_enabled=False;model.yaml=copy.deepcopy(model.yaml)
-    model.yaml.update(release_combination=copy.deepcopy(SPEC),paper_mode=True)
-    model.__class__=ReproModel
+    model.yaml.update(tricue=spec,paper_mode=True)
+    model.tricue_mask=MASKS[variant];model.__class__=ReproModel
     if hasattr(model,'criterion'):del model.criterion
     return model
 
 BACKBONE_MAP={0:0,1:1,2:2,3:3,9:4,10:5,14:6,15:7,19:8,20:9,
               4:0,5:1,6:2,7:3,11:4,12:5,16:6,17:7,21:8,22:9}
 
-def initialize(pretrained,nc):
+def initialize(pretrained,nc,variant='C'):
 
     if nc not in (1,3):raise ValueError('Only the documented one/three-class datasets are supported')
     checkpoint=torch.load(Path(pretrained),map_location='cpu',weights_only=False)
@@ -170,9 +232,9 @@ def initialize(pretrained,nc):
         three.load_state_dict(copied,strict=False)
         if nc==3:model=three
         else:
-            torch.random.default_generator.manual_seed(0)
+            torch.random.default_generator.manual_seed(614000)
             cfg=copy.deepcopy(three.yaml);cfg.update(nc=1,ablation_group='neither',ablation_gaffm=False,ablation_psab=False)
             model=DetectionModel(cfg,verbose=False);state=model.state_dict()
             model.load_state_dict({k:v for k,v in three.state_dict().items() if k in state and state[k].shape==v.shape},strict=False)
-        inject(model)
+        inject(model,variant)
     return model

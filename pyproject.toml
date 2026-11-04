@@ -3,9 +3,9 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "hfss-net-reproduction"
-version = "0.2.0"
-description = "RGB-T Object Detection with SDGW, EFC and DCT-HFP"
+name = "tricue-rgbt"
+version = "0.3.0"
+description = "TriCue: Statistical Context Recalibration, Reliability-Calibrated Cross-Modal Fusion and Frequency-Selective Pyramid Refinement"
 readme = "README.md"
 requires-python = ">=3.11,<3.13"
 dependencies = [
@@ -15,6 +15,10 @@ dependencies = [
   "tqdm==4.66.5", "psutil==6.1.0", "py-cpuinfo==9.0.0", "requests>=2.31,<3",
   "einops==0.8.0", "ultralytics-thop==2.0.9"
 ]
+
+[project.urls]
+Repository = "https://github.com/78687dfgjn/TriCue"
+Issues = "https://github.com/78687dfgjn/TriCue/issues"
 
 [tool.setuptools.packages.find]
 include = ["rgbt*", "ultralytics*"]

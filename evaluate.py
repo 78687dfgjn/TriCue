@@ -10,7 +10,7 @@ def main():
     p.add_argument('--dataset',choices=SETTINGS,required=True);p.add_argument('--output',type=Path,required=True)
     p.add_argument('--device',default='0');p.add_argument('--workers',type=int,default=4)
     p.add_argument('--batch',type=int,default=32)
-    p.add_argument('--split',choices=['val','test'],default='test')
+    p.add_argument('--split',choices=['val','test'],default='val')
     a=p.parse_args();spec=SETTINGS[a.dataset];out=external(a.output)
     result=evaluate(a.weights,a.data,a.device,out,spec['conf'],spec['iou'],a.workers,a.split,a.batch)
     write_json(out/'metrics.json',result);print(result)

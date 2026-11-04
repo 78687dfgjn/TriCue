@@ -14,3 +14,13 @@ dist/
 *.7z
 runs/
 datasets/
+
+# Manuscripts are intentionally excluded from this code release.
+*.pdf
+*.tex
+*.doc
+*.docx
+*.ppt
+*.pptx
+paper/
+manuscript/
