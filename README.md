@@ -2,7 +2,7 @@
 
 **TriCue: Towards Reliable and Complementary Representation Learning for RGB-T Object Detection**
 
-最终C方案：双流YOLO-Add + **SCR**（StatisticalSDGW）+ **RCMF**（SREFC）+ **FSPR**（SPHFP）。本仓库仅提供复现代码，不包含论文、数据集和训练权重。
+最终C方案：双流YOLO-Add + **SCR**+ **RCMF**+ **FSPR**。本仓库仅提供复现代码，不包含论文、数据集和训练权重。
 
 ## 1. 安装
 
