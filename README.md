@@ -2,8 +2,6 @@
 
 **TriCue: Towards Reliable and Complementary Representation Learning for RGB-T Object Detection**
 
-最终C方案：双流YOLO-Add + **SCR**+ **RCMF**+ **FSPR**。本仓库仅提供复现代码，不包含论文、数据集和训练权重。
-
 ## 1. 安装
 
 参考环境：Python 3.11.13、PyTorch 2.5.0、torchvision 0.20.0、CUDA 11.8。
@@ -64,8 +62,4 @@ python train.py --dataset rgbt --data ../repro-work/data/rgbt/dataset.yaml \
   --project ../repro-work/runs --device 0
 ```
 
-恢复保留优化器、EMA、scaler、调度器、随机流、加载器及最佳记录；不得更换源码、数据配置或训练预算。旧HFSS-Net/集群私有运行时的检查点请使用对应历史代码。
-
-历史C的51.0657%来自400轮学习率计划，不能作为上述80轮协议的保证值。以上划分用于Val选型，val/test别名不构成独立测试集。
-
-测试：`python -m unittest discover -s tests -v`。许可见 [LICENSE](LICENSE)。
+测试：`python -m unittest discover -s tests -v`。
